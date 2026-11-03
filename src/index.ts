@@ -13,12 +13,19 @@ interface AdminEnv {
 
 const htmlAssets: Record<string, string> = {
   "/": "/Pages/",
+  "/index": "/Pages/",
   "/index.html": "/Pages/",
+  "/login": "/Pages/login",
   "/login.html": "/Pages/login",
+  "/coming-soon": "/Pages/coming-soon",
   "/coming-soon.html": "/Pages/coming-soon",
+  "/page": "/Pages/page",
   "/page.html": "/Pages/page",
+  "/onboarding": "/Pages/onboarding",
   "/onboarding.html": "/Pages/onboarding",
+  "/dashboard": "/Pages/dashboard",
   "/dashboard.html": "/Pages/dashboard",
+  "/admin": "/Pages/admin",
   "/admin.html": "/Pages/admin",
 };
 
@@ -188,7 +195,7 @@ async function handle(request: Request, env: AdminEnv, ctx: ExecutionContext): P
   const url = new URL(request.url);
   const path = url.pathname;
   if (request.method === "GET" && path === "/") {
-    return Response.redirect(new URL("/admin.html", url), 302);
+    return Response.redirect(new URL("/admin", url), 302);
   }
   if (request.method === "GET" && (path === "/login" || path === "/login.html")) {
     return Response.redirect(`${env.AUTH_ORIGIN}/login${url.search}`, 302);

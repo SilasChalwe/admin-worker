@@ -21,6 +21,8 @@ const htmlAssets: Record<string, string> = {
   "/coming-soon.html": "/Pages/coming-soon",
   "/page": "/Pages/page",
   "/page.html": "/Pages/page",
+  "/career-application": "/Pages/career-application",
+  "/career-application.html": "/Pages/career-application",
   "/onboarding": "/Pages/onboarding",
   "/onboarding.html": "/Pages/onboarding",
   "/dashboard": "/Pages/dashboard",
@@ -66,7 +68,19 @@ function validNewsMedia(bytes: Uint8Array, contentType: string): boolean {
   if (contentType === "video/mp4") return bytes.length >= 12 && String.fromCharCode(...bytes.slice(4, 8)) === "ftyp";
   if (contentType === "video/webm") return bytes.length >= 4 &&
     bytes.slice(0, 4).join(",") === "26,69,223,163";
+  if (contentType === "audio/mpeg") return bytes.length >= 3 &&
+    (String.fromCharCode(...bytes.slice(0, 3)) === "ID3" || bytes[0] === 0xff && (bytes[1] & 0xe0) === 0xe0);
+  if (contentType === "audio/ogg") return bytes.length >= 4 && String.fromCharCode(...bytes.slice(0, 4)) === "OggS";
+  if (contentType === "audio/wav") return bytes.length >= 12 &&
+    String.fromCharCode(...bytes.slice(0, 4)) === "RIFF" && String.fromCharCode(...bytes.slice(8, 12)) === "WAVE";
+  if (contentType === "audio/webm") return bytes.length >= 4 &&
+    bytes.slice(0, 4).join(",") === "26,69,223,163";
+  if (contentType === "audio/mp4") return bytes.length >= 12 && String.fromCharCode(...bytes.slice(4, 8)) === "ftyp";
   return false;
+}
+
+function mediaType(contentType: string): "image" | "video" | "audio" {
+  return contentType.startsWith("video/") ? "video" : contentType.startsWith("audio/") ? "audio" : "image";
 }
 
 async function newsApi(request: Request, env: AdminEnv, path: string): Promise<Response | null> {
@@ -96,7 +110,7 @@ async function newsApi(request: Request, env: AdminEnv, path: string): Promise<R
       chunks.push(value);
     }
     if (total < 1 || length !== null && total !== length) {
-      return failure(400, "Upload a valid PNG, JPEG, WebP, MP4, or WebM file");
+      return failure(400, "Upload a valid image, video, or audio file");
     }
     const buffer = new Uint8Array(total);
     let offset = 0;
@@ -105,18 +119,21 @@ async function newsApi(request: Request, env: AdminEnv, path: string): Promise<R
       offset += chunk.byteLength;
     }
     if (!validNewsMedia(buffer, contentType)) {
-      return failure(400, "Upload a valid PNG, JPEG, WebP, MP4, or WebM file");
+      return failure(400, "Upload a valid image, video, or audio file");
     }
     const key = `public-news/${crypto.randomUUID()}`;
     await env.FILES.put(key, buffer, { httpMetadata: { contentType } });
-    return json({ mediaKey: key, mediaType: contentType.startsWith("video/") ? "video" : "image", contentType }, 201);
+    return json({ mediaKey: key, mediaType: mediaType(contentType), contentType }, 201);
   }
 
   if (path === "/api/admin/news" && request.method === "GET") {
     if (!canManageNews(user)) return failure(403, "Permission denied");
-    const result = await env.DB.prepare(`SELECT id, slug, title, summary, body, category, media_key, media_type,
-      media_content_type, media_alt, published, created_at, updated_at, author_id
-      FROM compiler_news WHERE ? = 1 OR author_id = ? ORDER BY created_at DESC LIMIT 100`)
+    const result = await env.DB.prepare(`SELECT n.id, n.slug, n.title, n.summary, n.body, n.category, n.media_key, n.media_type,
+      n.media_content_type, n.media_alt, n.published, n.created_at, n.updated_at, n.author_id,
+      COALESCE(m.views, 0) AS views, COALESCE(m.clicks, 0) AS clicks,
+      COALESCE(m.watch_seconds, 0) AS watch_seconds
+      FROM compiler_news n LEFT JOIN compiler_news_metrics m ON m.news_id = n.id
+      WHERE ? = 1 OR n.author_id = ? ORDER BY n.created_at DESC LIMIT 100`)
       .bind(user.role === "admin" ? 1 : 0, user.id).all();
     return json({ news: result.results });
   }
@@ -142,9 +159,9 @@ async function newsApi(request: Request, env: AdminEnv, path: string): Promise<R
     if (mediaKey) {
       const object = await env.FILES.head(mediaKey);
       if (!object) return failure(400, "Uploaded media was not found");
-      media = { media_type: object.httpMetadata?.contentType?.startsWith("video/") ? "video" : "image",
+      media = { media_type: mediaType(object.httpMetadata?.contentType || ""),
         content_type: object.httpMetadata?.contentType || "" };
-      if (!["image/png", "image/jpeg", "image/webp", "video/mp4", "video/webm"].includes(media.content_type)) {
+      if (!["image/png", "image/jpeg", "image/webp", "video/mp4", "video/webm", "audio/mpeg", "audio/ogg", "audio/wav", "audio/webm", "audio/mp4"].includes(media.content_type)) {
         return failure(400, "Unsupported media type");
       }
     }
@@ -191,6 +208,35 @@ async function newsApi(request: Request, env: AdminEnv, path: string): Promise<R
   return failure(404, "Not found");
 }
 
+async function serviceRequestsApi(request: Request, env: AdminEnv, path: string): Promise<Response | null> {
+  if (!path.startsWith("/api/admin/service-requests")) return null;
+  const user = await authorize(request, env.AUTH, ["admin", "staff"]);
+  if (isResponse(user)) return user;
+  if (path === "/api/admin/service-requests" && request.method === "GET") {
+    const result = await env.DB.prepare(`SELECT r.*, s.name AS service_name
+      FROM compiler_service_requests r JOIN compiler_services s ON s.slug = r.service_slug
+      ORDER BY r.created_at DESC LIMIT 100`).all();
+    return json({ serviceRequests: result.results });
+  }
+  const match = path.match(/^\/api\/admin\/service-requests\/([a-f0-9-]{36})$/);
+  if (match && request.method === "PUT") {
+    const data = await bodyJson(request);
+    if (!data || !["new", "contacted", "closed"].includes(String(data.status))) return failure(400, "Invalid service request status");
+    const existing = await env.DB.prepare("SELECT id, status FROM compiler_service_requests WHERE id = ?")
+      .bind(match[1]).first<{ id: string; status: string }>();
+    if (!existing) return failure(404, "Service request not found");
+    const now = new Date().toISOString();
+    await env.DB.batch([
+      env.DB.prepare("UPDATE compiler_service_requests SET status = ? WHERE id = ?").bind(data.status, match[1]),
+      env.DB.prepare(`INSERT INTO compiler_audit (id, actor_id, action, target_type, target_id, details, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)`).bind(crypto.randomUUID(), user.id, "service-request.update", "service-request", match[1],
+        JSON.stringify({ from: existing.status, to: data.status }), now),
+    ]);
+    return json({ serviceRequest: { id: match[1], status: data.status } });
+  }
+  return failure(404, "Not found");
+}
+
 async function handle(request: Request, env: AdminEnv, ctx: ExecutionContext): Promise<Response> {
   const url = new URL(request.url);
   const path = url.pathname;
@@ -208,6 +254,10 @@ async function handle(request: Request, env: AdminEnv, ctx: ExecutionContext): P
 
   if (path.startsWith("/api/admin/news")) {
     const response = await newsApi(request, env, path);
+    if (response) return response;
+  }
+  if (path.startsWith("/api/admin/service-requests")) {
+    const response = await serviceRequestsApi(request, env, path);
     if (response) return response;
   }
   const user = await authorize(request, env.AUTH, ["admin"]);
@@ -354,6 +404,75 @@ async function handle(request: Request, env: AdminEnv, ctx: ExecutionContext): P
         .bind(crypto.randomUUID(), user.id, "advisory-service.update", "advisory-service", advisoryMatch[1], JSON.stringify({ active: data.active }), now),
     ]);
     return json({ advisoryService: { slug: advisoryMatch[1], name, description, active: data.active } });
+  }
+
+  if (path === "/api/admin/careers" && request.method === "GET") {
+    const result = await env.DB.prepare(`SELECT c.*, count(a.id) AS application_count
+      FROM compiler_careers c LEFT JOIN compiler_career_applications a ON a.career_id = c.id
+      GROUP BY c.id ORDER BY c.sort_order, c.created_at DESC`).all();
+    return json({ careers: result.results });
+  }
+  const careerMatch = path.match(/^\/api\/admin\/careers\/([a-zA-Z0-9-]{1,80})$/);
+  if (careerMatch && request.method === "PUT") {
+    if (user.role !== "admin") return failure(403, "Admin role required");
+    const data = await bodyJson(request);
+    if (!data) return failure(400, "Invalid JSON");
+    const title = requiredField(data, "title", 160);
+    const summary = requiredField(data, "summary", 600);
+    const description = requiredField(data, "description", 4000);
+    const location = requiredField(data, "location", 160);
+    const employmentType = requiredField(data, "employmentType", 80);
+    if (!title || !summary || !description || !location || !employmentType || typeof data.published !== "boolean") {
+      return failure(400, "Complete the career details correctly");
+    }
+    const existing = await env.DB.prepare("SELECT id FROM compiler_careers WHERE id = ?").bind(careerMatch[1]).first<{ id: string }>();
+    if (!existing) return failure(404, "Career not found");
+    const now = new Date().toISOString();
+    await env.DB.batch([
+      env.DB.prepare(`UPDATE compiler_careers SET title = ?, summary = ?, description = ?, location = ?,
+        employment_type = ?, published = ?, updated_at = ? WHERE id = ?`)
+        .bind(title, summary, description, location, employmentType, data.published ? 1 : 0, now, existing.id),
+      env.DB.prepare("INSERT INTO compiler_audit (id, actor_id, action, target_type, target_id, details, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
+        .bind(crypto.randomUUID(), user.id, "career.update", "career", existing.id, JSON.stringify({ published: data.published }), now),
+    ]);
+    return json({ career: { id: existing.id, title, summary, description, location, employment_type: employmentType, published: data.published } });
+  }
+  if (path === "/api/admin/career-applications" && request.method === "GET") {
+    const rawPage = url.searchParams.get("page") || "1";
+    const rawLimit = url.searchParams.get("limit") || "50";
+    const page = Number(rawPage);
+    const limit = Number(rawLimit);
+    const status = url.searchParams.get("status");
+    if (!Number.isInteger(page) || page < 1 || page > 10000 || !Number.isInteger(limit) || limit < 1 || limit > 100 ||
+        status && !["new", "reviewed", "closed"].includes(status)) return failure(400, "Invalid application query");
+    const offset = (page - 1) * limit;
+    const count = status
+      ? await env.DB.prepare("SELECT count(*) AS total FROM compiler_career_applications WHERE status = ?").bind(status).first<{ total: number }>()
+      : await env.DB.prepare("SELECT count(*) AS total FROM compiler_career_applications").first<{ total: number }>();
+    const result = status
+      ? await env.DB.prepare(`SELECT a.*, c.title AS career_title FROM compiler_career_applications a
+          JOIN compiler_careers c ON c.id = a.career_id WHERE a.status = ? ORDER BY a.created_at DESC LIMIT ? OFFSET ?`)
+        .bind(status, limit, offset).all()
+      : await env.DB.prepare(`SELECT a.*, c.title AS career_title FROM compiler_career_applications a
+          JOIN compiler_careers c ON c.id = a.career_id ORDER BY a.created_at DESC LIMIT ? OFFSET ?`)
+        .bind(limit, offset).all();
+    const total = count?.total || 0;
+    return json({ applications: result.results, pagination: { page, pageSize: limit, total, totalPages: Math.max(1, Math.ceil(total / limit)) } });
+  }
+  const applicationMatch = path.match(/^\/api\/admin\/career-applications\/([a-f0-9-]{36})$/);
+  if (applicationMatch && request.method === "PUT") {
+    if (user.role !== "admin") return failure(403, "Admin role required");
+    const data = await bodyJson(request);
+    if (!data || !["new", "reviewed", "closed"].includes(String(data.status))) return failure(400, "Invalid application status");
+    const existing = await env.DB.prepare("SELECT id FROM compiler_career_applications WHERE id = ?").bind(applicationMatch[1]).first();
+    if (!existing) return failure(404, "Application not found");
+    const now = new Date().toISOString();
+    await env.DB.batch([
+      env.DB.prepare("UPDATE compiler_career_applications SET status = ? WHERE id = ?").bind(data.status, applicationMatch[1]),
+      env.DB.prepare("INSERT INTO compiler_audit (id, actor_id, action, target_type, target_id, details, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
+        .bind(crypto.randomUUID(), user.id, "career-application.update", "career-application", applicationMatch[1], JSON.stringify({ status: data.status }), now),
+    ]);
+    return json({ application: { id: applicationMatch[1], status: data.status } });
   }
 
   const roleMatch = path.match(/^\/api\/admin\/users\/([a-f0-9-]{36})\/role$/);

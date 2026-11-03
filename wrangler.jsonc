@@ -1,0 +1,51 @@
+{
+  "compatibility_date": "2026-11-03",
+  "observability": {
+    "enabled": true
+  },
+  "name": "compiler-admin",
+  "main": "src/index.ts",
+  "workers_dev": true,
+  "assets": {
+    "directory": "../compiler-site/dist",
+    "binding": "ASSETS",
+    "run_worker_first": [
+      "/*"
+    ]
+  },
+  "vars": {
+    "AUTH_ORIGIN": "https://compiler-auth.mchalwesilas.workers.dev",
+    "ALLOWED_ORIGINS": "https://compiler-site.mchalwesilas.workers.dev,https://compiler-auth.mchalwesilas.workers.dev,https://compiler-client.mchalwesilas.workers.dev,https://compiler-admin.mchalwesilas.workers.dev"
+  },
+  "secrets": {
+    "required": [
+      "INTERNAL_SERVICE_KEY"
+    ]
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "pulse-d1",
+      "database_id": "5a91273d-4d6b-4771-a14a-4a3e0d3b71c8",
+      "migrations_dir": "../compiler-site/migrations",
+      "remote": true
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "FILES",
+      "bucket_name": "pulse-media",
+      "remote": true
+    }
+  ],
+  "services": [
+    {
+      "binding": "AUTH",
+      "service": "compiler-auth"
+    },
+    {
+      "binding": "CLIENT",
+      "service": "compiler-client"
+    }
+  ]
+}

@@ -35,7 +35,7 @@ export function corsPreflight(request: Request, allowedOrigins: string): Respons
     headers: {
       "Access-Control-Allow-Origin": origin,
       "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
-      "Access-Control-Allow-Headers": "Authorization, Content-Type, Idempotency-Key, X-CSRF-Token, X-Filename",
+      "Access-Control-Allow-Headers": "Authorization, Content-Type, Idempotency-Key, Range, X-CSRF-Token, X-Filename",
       "Access-Control-Max-Age": "600",
       Vary: "Origin",
     },
@@ -48,6 +48,7 @@ export function corsResponse(request: Request, response: Response, allowedOrigin
   if (!origin || !allowedOrigins.split(",").map((item) => item.trim()).includes(origin)) return response;
   const headers = new Headers(response.headers);
   headers.set("Access-Control-Allow-Origin", origin);
+  headers.set("Access-Control-Expose-Headers", "Accept-Ranges, Content-Length, Content-Range");
   headers.append("Vary", "Origin");
   return new Response(response.body, {
     status: response.status,

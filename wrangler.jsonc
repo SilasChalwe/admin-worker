@@ -15,7 +15,7 @@
   },
   "vars": {
     "AUTH_ORIGIN": "https://compiler-auth.mchalwesilas.workers.dev",
-    "ALLOWED_ORIGINS": "https://compiler-site.mchalwesilas.workers.dev,https://compiler-auth.mchalwesilas.workers.dev,https://compiler-client.mchalwesilas.workers.dev,https://compiler-admin.mchalwesilas.workers.dev"
+    "ALLOWED_ORIGINS": "https://thecompiler.tech,https://www.thecompiler.tech,https://compiler-auth.mchalwesilas.workers.dev,https://compiler-client.mchalwesilas.workers.dev,https://compiler-admin.mchalwesilas.workers.dev"
   },
   "secrets": {
     "required": [

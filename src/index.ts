@@ -29,6 +29,8 @@ const htmlAssets: Record<string, string> = {
   "/dashboard.html": "/Pages/dashboard",
   "/admin": "/Pages/admin",
   "/admin.html": "/Pages/admin",
+  "/admin/content": "/Pages/admin",
+  "/admin/content.html": "/Pages/admin",
 };
 
 function assetRequest(request: Request): Request {
@@ -246,8 +248,8 @@ async function handle(request: Request, env: AdminEnv, ctx: ExecutionContext): P
   if (request.method === "GET" && (path === "/login" || path === "/login.html")) {
     return Response.redirect(`${env.AUTH_ORIGIN}/login${url.search}`, 302);
   }
-  if (request.method === "GET" && /^\/staff\/(marketing|media|designer|engineer|hr)$/.test(path)) {
-    return env.ASSETS.fetch(assetRequest(new Request(new URL("/index.html", url), request)));
+  if (request.method === "GET" && /^\/staff\/(ict|marketing|media|designer|engineer|hr)$/.test(path)) {
+    return env.ASSETS.fetch(assetRequest(new Request(new URL("/admin", url), request)));
   }
   if (path.startsWith("/staff/")) return failure(404, "Not found");
   if (!path.startsWith("/api/") && !path.startsWith("/internal/")) return env.ASSETS.fetch(assetRequest(request));
@@ -509,12 +511,21 @@ async function handle(request: Request, env: AdminEnv, ctx: ExecutionContext): P
     if (!data) return failure(400, "Invalid JSON");
     const email = requiredField(data, "email", 320);
     const displayName = requiredField(data, "displayName", 160);
-    const position = requiredField(data, "position", 120);
-    const department = requiredField(data, "department", 120);
-    const employeeRole = data.employeeRole;
-    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || !displayName || !position || !department ||
-        typeof employeeRole !== "string" || !employeeRoles.includes(employeeRole as typeof employeeRoles[number])) {
-      return failure(400, "Enter a valid email, name, role, department, and position");
+    const accountRole = data.accountRole === "client" ? "client" : "staff";
+    const position = accountRole === "staff" ? requiredField(data, "position", 120) : null;
+    const department = accountRole === "staff" ? requiredField(data, "department", 120) : null;
+    const employeeRole = accountRole === "staff" ? data.employeeRole : null;
+    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || !displayName) {
+      return failure(400, "Enter a valid email and full name");
+    }
+    if (
+      accountRole === "staff" &&
+      (!position ||
+        !department ||
+        typeof employeeRole !== "string" ||
+        !employeeRoles.includes(employeeRole as typeof employeeRoles[number]))
+    ) {
+      return failure(400, "Enter a valid department role, department, and position");
     }
     const emailNormalized = email.toLowerCase();
     const existing = await env.DB.prepare(`SELECT 1 FROM compiler_credentials WHERE email_normalized = ?
@@ -527,46 +538,74 @@ async function handle(request: Request, env: AdminEnv, ctx: ExecutionContext): P
     const now = new Date().toISOString();
     const expiresAt = new Date(Date.now() + 86_400_000).toISOString();
     const setupUrl = `${env.AUTH_ORIGIN}/login#employee-invitation=${encodeURIComponent(token)}`;
-    const message = [
-      `Hello ${displayName},`,
-      "",
-      "An administrator invited you to Compiler Technologies.",
-      `Role: ${employeeRole}`,
-      `Department: ${department}`,
-      `Position: ${position}`,
-      "",
-      "Use this one-time link within 24 hours to set your password:",
-      setupUrl,
-      "",
-      "If you were not expecting this invitation, you can ignore this message.",
-    ].join("\n");
+    const messageLines =
+      accountRole === "client"
+        ? [
+            `Hello ${displayName},`,
+            "",
+            "An administrator at Compiler Technologies Limited has provisioned your client portal account.",
+            "",
+            "Use this one-time link within 24 hours to set your password and sign in:",
+            setupUrl,
+            "",
+            "If you were not expecting this invitation, you can ignore this message.",
+          ]
+        : [
+            `Hello ${displayName},`,
+            "",
+            "An administrator invited you to Compiler Technologies Limited.",
+            `Role: ${employeeRole}`,
+            `Department: ${department}`,
+            `Position: ${position}`,
+            "",
+            "Use this one-time link within 24 hours to set your password:",
+            setupUrl,
+            "",
+            "If you were not expecting this invitation, you can ignore this message.",
+          ];
+    const message = messageLines.join("\n");
+    const outboxId = crypto.randomUUID();
     const result = await env.DB.batch([
       env.DB.prepare(`INSERT INTO compiler_employee_invitations
         (id, email_normalized, email, display_name, role, employee_role, department, position,
           token_hash, expires_at, created_by, created_at)
-        VALUES (?, ?, ?, ?, 'staff', ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(email_normalized) DO UPDATE SET id = excluded.id, email = excluded.email,
           display_name = excluded.display_name, role = excluded.role, employee_role = excluded.employee_role,
           department = excluded.department, position = excluded.position, token_hash = excluded.token_hash,
           expires_at = excluded.expires_at, created_by = excluded.created_by, used_at = NULL,
           created_at = excluded.created_at
         WHERE compiler_employee_invitations.used_at IS NOT NULL OR compiler_employee_invitations.expires_at <= ?`)
-        .bind(crypto.randomUUID(), emailNormalized, email, displayName, employeeRole, department, position,
+        .bind(crypto.randomUUID(), emailNormalized, email, displayName, accountRole, employeeRole, department, position,
           tokenHash, expiresAt, user.id, now, now),
       env.DB.prepare(`INSERT INTO compiler_outbox (id, recipient, subject, body, created_at)
         SELECT ?, ?, ?, ?, ? WHERE EXISTS (
           SELECT 1 FROM compiler_employee_invitations WHERE token_hash = ? AND used_at IS NULL
         )`)
-        .bind(crypto.randomUUID(), email, "Your Compiler employee invitation", message, now, tokenHash),
+        .bind(outboxId, email, "Your Compiler employee invitation", message, now, tokenHash),
       env.DB.prepare(`INSERT INTO compiler_audit (id, actor_id, action, target_type, target_id, details, created_at)
-        SELECT ?, ?, 'employee.invite', 'invitation', ?, ?, ? WHERE EXISTS (
+        SELECT ?, ?, ?, 'invitation', ?, ?, ? WHERE EXISTS (
           SELECT 1 FROM compiler_employee_invitations WHERE token_hash = ?
         )`)
-        .bind(crypto.randomUUID(), user.id, emailNormalized,
-          JSON.stringify({ employeeRole, department, position }), now, tokenHash),
+        .bind(crypto.randomUUID(), user.id, accountRole === "client" ? "client.invite" : "employee.invite", emailNormalized,
+          JSON.stringify({ accountRole, employeeRole, department, position }), now, tokenHash),
     ]);
     if (result[0]?.meta.changes !== 1 || result[1]?.meta.changes !== 1) {
       return failure(409, "There is already an active invitation for that email.");
+    }
+    const delivery = await env.CLIENT.fetch(new Request("https://client.internal/internal/email/send", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Internal-Key": env.INTERNAL_SERVICE_KEY },
+      body: JSON.stringify({ outboxId }),
+    }));
+    if (!delivery.ok) {
+      const detail = await delivery.text().catch(() => "");
+      console.error("Invitation email delivery failed", { status: delivery.status, detail });
+      await env.DB.batch([
+        env.DB.prepare("DELETE FROM compiler_employee_invitations WHERE token_hash = ? AND used_at IS NULL").bind(tokenHash),
+        env.DB.prepare("DELETE FROM compiler_outbox WHERE id = ? AND sent_at IS NULL").bind(outboxId),
+      ]);
+      return failure(502, "Invitation email could not be sent via SMTP. Verify mailbox SMTP access and try again.");
     }
     return json({ invitation: { email, expiresAt } }, 201);
   }

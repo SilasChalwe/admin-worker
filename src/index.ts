@@ -979,16 +979,16 @@ async function departmentItemsApi(request: Request, env: AdminEnv, path: string,
 async function handle(request: Request, env: AdminEnv, ctx: ExecutionContext): Promise<Response> {
   const url = new URL(request.url);
   const path = url.pathname;
-  if (request.method === "GET" && isPublicSitePath(path)) {
+  if ((request.method === "GET" || request.method === "HEAD") && isPublicSitePath(path)) {
     return Response.redirect(`${publicSiteOrigin(env)}${path}${url.search}`, 302);
   }
-  if (request.method === "GET" && path === "/") {
+  if ((request.method === "GET" || request.method === "HEAD") && path === "/") {
     return Response.redirect(new URL("/admin", url), 302);
   }
-  if (request.method === "GET" && (path === "/login" || path === "/login.html")) {
+  if ((request.method === "GET" || request.method === "HEAD") && (path === "/login" || path === "/login.html")) {
     return Response.redirect(`${env.AUTH_ORIGIN}/login${url.search}`, 302);
   }
-  if (request.method === "GET" && /^\/staff\/(ict|marketing|media|designer|engineer|hr)$/.test(path)) {
+  if ((request.method === "GET" || request.method === "HEAD") && /^\/staff\/(ict|marketing|media|designer|engineer|hr)$/.test(path)) {
     return env.ASSETS.fetch(assetRequest(new Request(new URL("/admin", url), request)));
   }
   if (path.startsWith("/staff/")) return failure(404, "Not found");
